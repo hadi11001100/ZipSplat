@@ -1,0 +1,264 @@
+.
+├── assets
+│   └── examples
+│       ├── motorcycle.mp4
+│       ├── office
+│       │   ├── IMG_2286.png
+│       │   ├── IMG_2287.png
+│       │   ├── IMG_2288.png
+│       │   ├── IMG_2289.png
+│       │   └── IMG_2290.png
+│       └── statues.mp4
+├── CLAUDE.md
+├── demo
+│   ├── app.py
+│   ├── fly_through.py
+│   ├── README.md
+│   ├── requirements.txt
+│   └── viewer.html
+├── experiments
+│   └── test_masking.py
+├── .git
+│   ├── COMMIT_EDITMSG
+│   ├── config
+│   ├── description
+│   ├── FETCH_HEAD
+│   ├── HEAD
+│   ├── hooks
+│   │   ├── applypatch-msg.sample
+│   │   ├── commit-msg.sample
+│   │   ├── fsmonitor-watchman.sample
+│   │   ├── post-update.sample
+│   │   ├── pre-applypatch.sample
+│   │   ├── pre-commit.sample
+│   │   ├── pre-merge-commit.sample
+│   │   ├── prepare-commit-msg.sample
+│   │   ├── pre-push.sample
+│   │   ├── pre-rebase.sample
+│   │   ├── pre-receive.sample
+│   │   ├── push-to-checkout.sample
+│   │   ├── sendemail-validate.sample
+│   │   └── update.sample
+│   ├── index
+│   ├── info
+│   │   └── exclude
+│   ├── logs
+│   │   ├── HEAD
+│   │   └── refs
+│   │       ├── heads
+│   │       └── remotes
+│   ├── objects
+│   │   ├── 1d
+│   │   │   └── 24670ce9a0e1ee01f687cbe89b2db5ed6ca454
+│   │   ├── 31
+│   │   │   └── ffb6970b402a8df8ea9637e652190c9a469a90
+│   │   ├── 4e
+│   │   │   └── 7402e1f421a41c97b0711bb132584a1a485d47
+│   │   ├── a5
+│   │   │   └── 128c97b0d72d9b2859f6e1f3fa393b4773e1dd
+│   │   ├── info
+│   │   └── pack
+│   │       ├── pack-91f00e2608e5f7fbc51d980c5e60fde4c99bb6c0.idx
+│   │       ├── pack-91f00e2608e5f7fbc51d980c5e60fde4c99bb6c0.pack
+│   │       └── pack-91f00e2608e5f7fbc51d980c5e60fde4c99bb6c0.rev
+│   ├── packed-refs
+│   └── refs
+│       ├── heads
+│       │   ├── develop
+│       │   └── main
+│       ├── remotes
+│       │   ├── origin
+│       │   └── upstream
+│       └── tags
+├── .gitattributes
+├── .gitignore
+├── LICENSE
+├── .pre-commit-config.yaml
+├── pyproject.toml
+├── README.md
+├── requirements.txt
+├── splatfactory
+│   ├── configs
+│   │   ├── benchmarks
+│   │   │   └── re10k_dl3dv.yaml
+│   │   ├── data
+│   │   │   ├── dl3dv.yaml
+│   │   │   ├── multi_dataset_504.yaml
+│   │   │   ├── re10k_dl3dv_252.yaml
+│   │   │   └── re10k.yaml
+│   │   ├── model
+│   │   │   ├── backbone
+│   │   │   └── zipsplat.yaml
+│   │   ├── zipsplat-4090.yaml
+│   │   ├── zipsplat_eval.yaml
+│   │   ├── zipsplat_ft504.yaml
+│   │   └── zipsplat.yaml
+│   ├── datasets
+│   │   ├── augmentations.py
+│   │   ├── base_dataset.py
+│   │   ├── composed.py
+│   │   ├── dataset_arkitscenes.py
+│   │   ├── dataset_blendedmvs.py
+│   │   ├── dataset_co3d.py
+│   │   ├── dataset_dl3dv.py
+│   │   ├── dataset_gobjaverse.py
+│   │   ├── dataset_hypersim.py
+│   │   ├── dataset_mipnerf360.py
+│   │   ├── dataset_re10k.py
+│   │   ├── dataset_scannetpp.py
+│   │   ├── dataset_unrealstereo4k.py
+│   │   ├── dataset_wildrgbd.py
+│   │   ├── __init__.py
+│   │   ├── multi_view_dataset.py
+│   │   ├── README.md
+│   │   ├── scripts
+│   │   │   ├── arkitscenes
+│   │   │   ├── blendedmvs
+│   │   │   ├── co3d
+│   │   │   ├── dl3dv
+│   │   │   ├── extract_depth.py
+│   │   │   ├── gobjaverse
+│   │   │   ├── hypersim
+│   │   │   ├── __init__.py
+│   │   │   ├── mipnerf360
+│   │   │   ├── precompute_rankings.py
+│   │   │   ├── re10k
+│   │   │   ├── repack.py
+│   │   │   ├── resize.py
+│   │   │   ├── scannetpp
+│   │   │   ├── unrealstereo4k
+│   │   │   ├── utils.py
+│   │   │   └── wildrgbd
+│   │   ├── utils
+│   │   │   ├── debug.py
+│   │   │   ├── __init__.py
+│   │   │   ├── io.py
+│   │   │   └── workers.py
+│   │   └── view_sampler
+│   │       ├── base_sampler.py
+│   │       ├── bounded.py
+│   │       ├── eval_sampler.py
+│   │       ├── __init__.py
+│   │       ├── random.py
+│   │       └── rank.py
+│   ├── eval
+│   │   ├── dl3dv_benchmark.py
+│   │   ├── eval_pipeline.py
+│   │   ├── indices
+│   │   │   ├── dl3dv
+│   │   │   ├── mipnerf360
+│   │   │   ├── re10k
+│   │   │   └── scannetpp_iphone
+│   │   ├── __init__.py
+│   │   ├── io.py
+│   │   ├── mipnerf360_benchmark.py
+│   │   ├── multiview_benchmark.py
+│   │   ├── re10k_benchmark.py
+│   │   ├── run.py
+│   │   └── scannetpp_benchmark.py
+│   ├── gaussians.py
+│   ├── geometry
+│   │   ├── cameras.py
+│   │   ├── __init__.py
+│   │   ├── kernels
+│   │   │   ├── __init__.py
+│   │   │   ├── normal_equations.py
+│   │   │   └── pnp.py
+│   │   ├── pose_aligner
+│   │   │   ├── __init__.py
+│   │   │   ├── lm.py
+│   │   │   └── photometric.py
+│   │   ├── poses.py
+│   │   ├── token_ba.py
+│   │   └── utils
+│   │       ├── clustering.py
+│   │       ├── __init__.py
+│   │       ├── overlap.py
+│   │       ├── pca.py
+│   │       ├── pnp.py
+│   │       └── scale.py
+│   ├── __init__.py
+│   ├── models
+│   │   ├── base_model.py
+│   │   ├── cache_loader.py
+│   │   ├── decoders
+│   │   │   ├── cam_dec.py
+│   │   │   ├── gaussian_head.py
+│   │   │   └── __init__.py
+│   │   ├── encoders
+│   │   │   ├── dav3_dino.py
+│   │   │   ├── dav3_encoder.py
+│   │   │   └── __init__.py
+│   │   ├── __init__.py
+│   │   ├── losses.py
+│   │   ├── metrics.py
+│   │   ├── modules
+│   │   │   ├── attention.py
+│   │   │   ├── drop_path.py
+│   │   │   ├── __init__.py
+│   │   │   ├── misc.py
+│   │   │   ├── patch_embed.py
+│   │   │   ├── rope.py
+│   │   │   ├── swiglu_ffn.py
+│   │   │   └── transformer_block.py
+│   │   ├── networks
+│   │   │   ├── __init__.py
+│   │   │   ├── zipsplat_eval.py
+│   │   │   └── zipsplat.py
+│   │   └── utils
+│   │       ├── buffers.py
+│   │       ├── geoce.py
+│   │       ├── __init__.py
+│   │       └── misc.py
+│   ├── pyproject.toml
+│   ├── requirements.txt
+│   ├── settings.py
+│   ├── trainer.py
+│   ├── train.py
+│   ├── utils
+│   │   ├── conversions.py
+│   │   ├── distributed.py
+│   │   ├── experiments.py
+│   │   ├── export.py
+│   │   ├── image.py
+│   │   ├── __init__.py
+│   │   ├── mappings.py
+│   │   ├── metrics.py
+│   │   ├── optim.py
+│   │   ├── stdout_capturing.py
+│   │   ├── summary_writer.py
+│   │   ├── tensor.py
+│   │   ├── timing.py
+│   │   ├── tools.py
+│   │   └── types.py
+│   └── visualization
+│       ├── scene_viewer.py
+│       ├── token_pca.py
+│       ├── visualize_batch.py
+│       ├── viz2d.py
+│       ├── viz3d.py
+│       └── viz_video.py
+├── struktur.txt
+└── zipsplat
+    ├── backbone.py
+    ├── camera.py
+    ├── clustering.py
+    ├── gaussians.py
+    ├── heads.py
+    ├── __init__.py
+    ├── kernels
+    │   ├── __init__.py
+    │   ├── normal_equations.py
+    │   └── pnp.py
+    ├── modules.py
+    ├── pnp.py
+    ├── pose_aligner.py
+    ├── pose.py
+    ├── predictor.py
+    ├── token_ba.py
+    ├── utils.py
+    ├── viewer.py
+    ├── viz.py
+    └── zipsplat.py
+
+67 directories, 195 files

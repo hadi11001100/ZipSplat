@@ -18,15 +18,3 @@
    - Translate tasks into verifiable criteria (e.g., shape assertions, minimal test scripts, reproducible outputs).
    - A task is complete only when verified by successful execution or passing assertions, not merely by generating syntactically valid code.
 
----
-
-## Repository Guardrails & Constraints
-
-- **File Access Restrictions:**
-  - NEVER read or process large binary assets, checkpoints, or weights (`*.pth`, `*.pt`, `*.ckpt`, `*.safetensors`, `weights/`).
-  - NEVER inspect 3D files (`*.ply`, `*.obj`, `*.splat`) or large dataset directories (`data/`, `datasets/`, `outputs/`, `wandb/`).
-  
-- **Search & Inspection:**
-  - Avoid unconstrained repo-wide greps or recursive file traversals.
-  - Keep file inspections focused, localized, and tied to specific modules (e.g., target loaders, model backbones, or rasterizer interfaces directly).
-  - Prefer reporting file paths, line numbers, and exact signatures before editing.
