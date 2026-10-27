@@ -35,7 +35,7 @@ def get_background_mask(images):
     return [torch.ones_like(im[:1]) for im in images]
 
 
-def apply_my_token_masking(enc, mask, patch_size):
+def apply_token_masking(enc, mask, patch_size):
     """Keep only the foreground tokens of the encoded views.
 
     Args:
@@ -86,7 +86,7 @@ def main():
 
     with torch.no_grad(), wrapper.autocast():
         enc = model.encode(x)
-        enc_masked, keep = apply_my_token_masking(enc, mask, model.patch_size)
+        enc_masked, keep = apply_token_masking(enc, mask, model.patch_size)
         pred = model.decode(enc_masked, x, compression=1.0)
     pred = remove_batch_dim(pred)
 
