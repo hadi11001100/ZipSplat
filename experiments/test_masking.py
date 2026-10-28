@@ -6,8 +6,8 @@ tokens and hands them to ZipSplat.decode. The masked tokens of all views are pac
 pseudo-view (B, 1, N_fg, D). The fusion blocks carry no positional encoding, so decode accepts
 any token count.
 
-The background removal itself is still open (the two TODOs below). Until then the mask keeps
-every token, so the run must reproduce the unmasked prediction.
+The foreground comes from RMBG-2.0, a token is kept when the average-pooled mask over its patch
+exceeds a threshold.
 
 Limits for now:
     - compression=1.0 only: complexity_kmeans seeds from all V * T patches of the images.
@@ -56,7 +56,7 @@ def get_background_mask(images):
     return masks
 
 
-def apply_token_masking(enc, mask, patch_size):
+def apply_token_masking(enc, mask, patch_size, threshold=0.5):
     """Keep only the foreground tokens of the encoded views.
 
     Args:
@@ -64,6 +64,7 @@ def apply_token_masking(enc, mask, patch_size):
             color_tokens (B, V, T, D), cam_token (B, V, 2 * D).
         mask: Foreground mask (B, V, H, W) in {0, 1}, same crop and size as the model images.
         patch_size: Pixels per token side, T = (H / patch_size) * (W / patch_size).
+        threshold: Minimum foreground fraction of a patch to keep its token.
 
     Returns:
         enc_masked: enc with the token tensors as (B, 1, N_fg, D), cam_token untouched.
@@ -73,8 +74,10 @@ def apply_token_masking(enc, mask, patch_size):
     assert B == 1, "N_fg differs per scene: one scene at a time"
     assert mask.shape[-2] * mask.shape[-1] == T * patch_size**2
 
-    # TODO: derive keep from the mask (pixel mask -> patch grid -> threshold).
-    keep = torch.ones(V * T, dtype=torch.bool, device=mask.device)
+    # Foreground fraction per patch: (V, 1, H / p, W / p), flattened in token order.
+    frac = F.avg_pool2d(mask[0, :, None].float(), kernel_size=patch_size, stride=patch_size)
+    keep = (frac.flatten() > threshold).to(enc["geo_tokens"].device)
+    assert keep.numel() == V * T
 
     select = lambda t: t.reshape(B, V * T, D)[:, keep].unsqueeze(1)  # noqa: E731
     enc_masked = {
@@ -93,12 +96,13 @@ def main():
     parser.add_argument("--out", type=Path, default=Path("outputs/masking"))
     args = parser.parse_args()
 
+    # Masks first: RMBG is freed before ZipSplat goes to the GPU.
+    images = [load_image(p) for p in args.images]
+    masks = get_background_mask(images)
+
     # The wrapper loads the weights and crops the inputs, the network itself is wrapper.model.
     wrapper = ZipSplat(weights=args.weights).cuda().eval()
     model = wrapper.model
-
-    images = [load_image(p) for p in args.images]
-    masks = get_background_mask(images)
 
     # Same center crop and resize for images and masks (masks as 3 channels, keep channel 0).
     x, _, _ = wrapper.prepare_inputs(images)
@@ -106,8 +110,8 @@ def main():
     x, mask = x[None], (mask[None, :, 0] > 0.5).float()  # (1, V, 3, H, W), (1, V, H, W)
 
     with torch.no_grad(), wrapper.autocast():
-        enc = model.encode(x)
-        enc_masked, keep = apply_token_masking(enc, mask, model.patch_size)
+        # no reference to the full encoding: it is freed before decode
+        enc_masked, keep = apply_token_masking(model.encode(x), mask, model.patch_size)
         pred = model.decode(enc_masked, x, compression=1.0)
     pred = remove_batch_dim(pred)
 
