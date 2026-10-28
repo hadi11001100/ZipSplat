@@ -26,13 +26,34 @@ from torchvision.utils import save_image
 from zipsplat import ZipSplat, load_image
 from zipsplat.utils import remove_batch_dim
 
+import torch.nn.functional as F
+from transformers import AutoModelForImageSegmentation
+
 
 def get_background_mask(images):
-    """Foreground mask (V, 1, h, w) in {0, 1} of the raw views [(3, h, w), ...].
+    """Foreground mask [(1, h, w), ...] in [0, 1] of the raw views [(3, h, w), ...].
 
-    TODO: the actual background segmentation. For now every pixel is foreground.
+    RMBG-2.0 (BiRefNet), gated on the HF hub: accept the license and log in first. The soft
+    alpha is thresholded in main, after the crop and resize.
     """
-    return [torch.ones_like(im[:1]) for im in images]
+
+    rmbg = AutoModelForImageSegmentation.from_pretrained("briaai/RMBG-2.0", trust_remote_code=True)
+    rmbg = rmbg.cuda().eval()
+    mean = torch.tensor([0.485, 0.456, 0.406], device="cuda")[:, None, None]
+    std = torch.tensor([0.229, 0.224, 0.225], device="cuda")[:, None, None]
+
+    masks = []
+    with torch.no_grad():
+        for im in images:
+            h, w = im.shape[-2:]
+            x = F.interpolate(im[None].cuda(), size=(1024, 1024), mode="bilinear")
+            alpha = rmbg((x - mean) / std)[-1].sigmoid()  # (1, 1, 1024, 1024)
+            alpha = F.interpolate(alpha.float(), size=(h, w), mode="bilinear")
+            masks.append(alpha[0].clamp(0, 1).cpu())
+
+    del rmbg
+    torch.cuda.empty_cache()
+    return masks
 
 
 def apply_token_masking(enc, mask, patch_size):
