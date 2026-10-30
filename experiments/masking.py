@@ -1,10 +1,9 @@
 """
 Background masking of the DA3 tokens, between ZipSplat's encode and decode.
 
-The zipsplat package stays untouched: this script calls ZipSplat.encode, masks the encoded
-tokens and hands them to ZipSplat.decode. The masked tokens of all views are packed into one
-pseudo-view (B, 1, N_fg, D). The fusion blocks carry no positional encoding, so decode accepts
-any token count.
+Module only, the pipeline lives in experiments/run_masked_zipsplat.py. The masked tokens of all
+views are packed into one pseudo-view (B, 1, N_fg, D). The fusion blocks carry no positional
+encoding, so decode accepts any token count.
 
 The foreground comes from RMBG-2.0, a token is kept when the average-pooled mask over its patch
 exceeds a threshold.
@@ -12,20 +11,9 @@ exceeds a threshold.
 Limits for now:
     - compression=1.0 only: complexity_kmeans seeds from all V * T patches of the images.
     - no TokenBA (ZipSplat.refine): it expects assignments over all V * T tokens.
-
-Usage:
-    python -m experiments.test_masking img0.png img1.png ... --out outputs/masking
 """
 
-import argparse
-from pathlib import Path
-
 import torch
-from torchvision.utils import save_image
-
-from zipsplat import ZipSplat, load_image
-from zipsplat.utils import remove_batch_dim
-
 import torch.nn.functional as F
 from transformers import AutoModelForImageSegmentation
 
@@ -34,7 +22,7 @@ def get_background_mask(images):
     """Foreground mask [(1, h, w), ...] in [0, 1] of the raw views [(3, h, w), ...].
 
     RMBG-2.0 (BiRefNet), gated on the HF hub: accept the license and log in first. The soft
-    alpha is thresholded in main, after the crop and resize.
+    alpha is thresholded in prepare_masks, after the crop and resize.
     """
 
     rmbg = AutoModelForImageSegmentation.from_pretrained("briaai/RMBG-2.0", trust_remote_code=True)
@@ -54,6 +42,19 @@ def get_background_mask(images):
     del rmbg
     torch.cuda.empty_cache()
     return masks
+
+
+def prepare_masks(wrapper, masks, threshold=0.5):
+    """Binary masks (1, V, H, W) with the same center crop and resize as the model images.
+
+    Args:
+        wrapper: ZipSplat wrapper, its prepare_inputs crops and resizes the images.
+        masks: Soft foreground masks [(1, h, w), ...] from get_background_mask.
+        threshold: Minimum alpha of a pixel to count as foreground.
+    """
+    # prepare_inputs expects RGB: masks as 3 channels, keep channel 0.
+    mask, _, _ = wrapper.prepare_inputs([m.expand(3, -1, -1) for m in masks])
+    return (mask[None, :, 0] > threshold).float()
 
 
 def apply_token_masking(enc, mask, patch_size, threshold=0.5):
@@ -88,51 +89,3 @@ def apply_token_masking(enc, mask, patch_size, threshold=0.5):
     }
     return enc_masked, keep
 
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("images", nargs="+", type=Path)
-    parser.add_argument("--weights", default="zipsplat")
-    parser.add_argument("--out", type=Path, default=Path("outputs/masking"))
-    args = parser.parse_args()
-
-    # Masks first: RMBG is freed before ZipSplat goes to the GPU.
-    images = [load_image(p) for p in args.images]
-    masks = get_background_mask(images)
-
-    # The wrapper loads the weights and crops the inputs, the network itself is wrapper.model.
-    wrapper = ZipSplat(weights=args.weights).cuda().eval()
-    model = wrapper.model
-
-    # Same center crop and resize for images and masks (masks as 3 channels, keep channel 0).
-    x, _, _ = wrapper.prepare_inputs(images)
-    mask, _, _ = wrapper.prepare_inputs([m.expand(3, -1, -1) for m in masks])
-    x, mask = x[None], (mask[None, :, 0] > 0.5).float()  # (1, V, 3, H, W), (1, V, H, W)
-
-    with torch.no_grad(), wrapper.autocast():
-        # no reference to the full encoding: it is freed before decode
-        enc_masked, keep = apply_token_masking(model.encode(x), mask, model.patch_size)
-        pred = model.decode(enc_masked, x, compression=1.0)
-    pred = remove_batch_dim(pred)
-
-    # Checks: one scene token per kept token, G Gaussians per scene token.
-    N_fg = int(keep.sum())
-    G = model.gaussian_head.gaussians_per_token
-    assert enc_masked["geo_tokens"].shape[2] == N_fg
-    assert pred["scene_tokens"].shape[0] == N_fg
-    assert pred["gaussians"].shape[0] == N_fg * G
-    print(f"kept {N_fg} / {keep.numel()} tokens -> {pred['gaussians'].shape[0]} Gaussians")
-
-    # Render the Gaussians back into the input views, next to the inputs.
-    with torch.no_grad():
-        rgb, _ = pred["gaussians"].render(pred["cameras"], pred["poses"])  # (V, 3, H, W)
-    args.out.mkdir(parents=True, exist_ok=True)
-    grid = torch.cat([x[0], rgb.clamp(0, 1)], dim=0)  # inputs in row 1, renders in row 2
-    save_image(grid, args.out / "inputs_vs_render.png", nrow=x.shape[1])
-    save_image(mask[0, :, None], args.out / "masks.png", nrow=x.shape[1])
-    pred["gaussians"].save_ply(args.out / "scene.ply")
-    print(f"saved to {args.out}")
-
-
-if __name__ == "__main__":
-    main()

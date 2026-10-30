@@ -28,6 +28,7 @@ plots/**
 
 # experiments runtime state
 experiments/.registry.json
+experiments/outputs/
 
 # weights
 *.ckpt
