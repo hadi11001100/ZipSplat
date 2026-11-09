@@ -11,6 +11,8 @@ Usage:
 """
 
 import argparse
+import json
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -35,7 +37,12 @@ def main():
     model = wrapper.model
 
     # ba=False: exactly encode -> decode with compression=1.0, like the masked script without masking.
+    torch.cuda.reset_peak_memory_stats()
+    torch.cuda.synchronize()
+    t0 = time.perf_counter()
     pred = wrapper(images, compression=1.0, ba=args.ba)
+    torch.cuda.synchronize()
+    time_s = time.perf_counter() - t0  # crop/resize + encode -> decode (+ TokenBA if --ba)
     x = pred["model_images"]  # (V, 3, H, W), same crop and resize as the masked script
 
     # Checks: every token is kept, G Gaussians per token.
@@ -53,6 +60,27 @@ def main():
     grid = torch.cat([x, rgb.clamp(0, 1)], dim=0)  # inputs in row 1, renders in row 2
     save_image(grid, out / "inputs_vs_render.png", nrow=V)
     pred["gaussians"].save_ply(out / "scene.ply")
+
+    # Metrics: PSNR of the renders on the input views, same keys as the masked script.
+    se = (rgb.clamp(0, 1).float() - x.float()) ** 2  # (V, 3, H, W)
+    psnr = -10 * se.mean((1, 2, 3)).log10()  # (V,)
+    metrics = {
+        "args": vars(args),  # Paths via default=str
+        "num_views": V,
+        "H": H,
+        "W": W,
+        "tokens_kept": N,
+        "tokens_total": N,
+        "keep_ratio": 1.0,
+        "num_gaussians": pred["gaussians"].shape[0],
+        "ply_mb": (out / "scene.ply").stat().st_size / 1e6,
+        "time_s": time_s,
+        "peak_mem_gb": torch.cuda.max_memory_allocated() / 1e9,
+        "psnr": psnr.mean().item(),
+        "psnr_per_view": psnr.tolist(),
+    }
+    (out / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
+    print(f"psnr {metrics['psnr']:.2f} | {time_s:.2f} s")
     print(f"saved to {out}")
 
 
