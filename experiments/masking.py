@@ -44,6 +44,27 @@ def get_background_mask(images):
     return masks
 
 
+def apply_boxes(masks, names, boxes):
+    """Masks [(1, h, w), ...] set to 0 outside the hand-drawn box of each view.
+
+    Args:
+        masks: Soft foreground masks [(1, h, w), ...] of the raw views, from get_background_mask.
+        names: Image file name per view, the keys of boxes.
+        boxes: {name: [x0, y0, x1, y1]} in pixels of the raw view, x1 and y1 exclusive, from
+            experiments/draw_boxes.py.
+    """
+    out = []
+    for mask, name in zip(masks, names, strict=True):
+        assert name in boxes, f"no box for {name}"
+        x0, y0, x1, y1 = boxes[name]
+        h, w = mask.shape[-2:]
+        assert 0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h, f"box {boxes[name]} outside {name}"
+        boxed = torch.zeros_like(mask)
+        boxed[..., y0:y1, x0:x1] = mask[..., y0:y1, x0:x1]
+        out.append(boxed)
+    return out
+
+
 def prepare_masks(wrapper, masks, threshold=0.5):
     """Binary masks (1, V, H, W) with the same center crop and resize as the model images.
 
