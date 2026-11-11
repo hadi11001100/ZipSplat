@@ -86,7 +86,9 @@ def main():
     se = (rgb.clamp(0, 1).float() - x[0].float()) ** 2  # (V, 3, H, W)
     m = mask[0, :, None]  # (V, 1, H, W)
     psnr = -10 * se.mean((1, 2, 3)).log10()  # (V,)
-    psnr_fg = -10 * ((se * m).sum((1, 2, 3)) / (3 * m.sum((1, 2, 3))).clamp(min=1)).log10()
+    n_fg = m.sum((1, 2, 3))  # (V,) foreground pixels per view
+    has_fg = n_fg > 0  # views without foreground have no psnr_fg (would be inf)
+    psnr_fg = -10 * ((se * m).sum((1, 2, 3)) / (3 * n_fg.clamp(min=1))).log10()  # (V,)
     metrics = {
         "args": vars(args),  # Paths via default=str
         "num_views": V,
@@ -101,12 +103,13 @@ def main():
         "time_s": time_s,
         "peak_mem_gb": torch.cuda.max_memory_allocated() / 1e9,
         "psnr": psnr.mean().item(),
-        "psnr_fg": psnr_fg.mean().item(),
+        "psnr_fg": psnr_fg[has_fg].mean().item() if has_fg.any() else None,
+        "num_views_empty_fg": int((~has_fg).sum()),
         "psnr_per_view": psnr.tolist(),
-        "psnr_fg_per_view": psnr_fg.tolist(),
+        "psnr_fg_per_view": [p if ok else None for p, ok in zip(psnr_fg.tolist(), has_fg.tolist())],
     }
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
-    print(f"psnr {metrics['psnr']:.2f} | psnr_fg {metrics['psnr_fg']:.2f} | {time_s:.2f} s")
+    print(f"psnr {metrics['psnr']:.2f} | psnr_fg {metrics['psnr_fg']} | {time_s:.2f} s")
     print(f"saved to {out}")
 
 
