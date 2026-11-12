@@ -1,12 +1,12 @@
 """
-ZipSplat with background-masked tokens: images -> RMBG masks -> encode -> token masking -> decode.
+ZipSplat with background-masked tokens: images + mask files -> encode -> token masking -> decode.
 
 The masking itself lives in experiments/masking.py, this script only wires it into ZipSplat and
 saves the results to experiments/outputs/masking_<date>_<time>/.
 
 Usage:
-    python -m experiments.run_masked_zipsplat assets/examples/office/*.png
-    python -m experiments.run_masked_zipsplat experiments/rig/ImageTest2/*.jpg --boxes experiments/boxes.json
+    python -m experiments.run_masked_zipsplat experiments/rig/ImageTest2/*.jpg \
+        --masks experiments/rig/labels
 """
 
 import argparse
@@ -18,12 +18,7 @@ from pathlib import Path
 import torch
 from torchvision.utils import save_image
 
-from experiments.masking import (
-    apply_boxes,
-    apply_token_masking,
-    get_background_mask,
-    prepare_masks,
-)
+from experiments.masking import apply_token_masking, load_masks, prepare_masks
 from zipsplat import ZipSplat, load_image
 from zipsplat.utils import remove_batch_dim
 
@@ -32,18 +27,17 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("images", nargs="+", type=Path)
     parser.add_argument("--weights", default="zipsplat")
-    parser.add_argument("--boxes", type=Path, help="boxes from experiments/draw_boxes.py")
+    parser.add_argument(
+        "--masks", type=Path, required=True, help="YOLO polygon labels, one <stem>.txt per image"
+    )
     args = parser.parse_args()
-    boxes = json.loads(args.boxes.read_text()) if args.boxes else None  # before RMBG: fail fast
 
     # One folder per run, next to this script.
     out = Path(__file__).parent / "outputs" / f"masking_{datetime.now():%Y-%m-%d_%H-%M-%S}"
 
-    # Masks first: RMBG is freed before ZipSplat goes to the GPU.
+    # Masks first: a missing or mis-sized mask fails before ZipSplat loads.
+    masks = load_masks(args.masks, args.images)
     images = [load_image(p) for p in args.images]
-    masks = get_background_mask(images)
-    if boxes is not None:  # RMBG also marks rig parts: keep only the hand-drawn object box
-        masks = apply_boxes(masks, [p.name for p in args.images], boxes)
 
     # The wrapper loads the weights and crops the inputs, the network itself is wrapper.model.
     wrapper = ZipSplat(weights=args.weights).cuda().eval()
@@ -61,7 +55,7 @@ def main():
         enc_masked, keep = apply_token_masking(model.encode(x), mask, model.patch_size)
         pred = model.decode(enc_masked, x, compression=1.0)
     torch.cuda.synchronize()
-    time_s = time.perf_counter() - t0  # encode -> masking -> decode, RMBG not included
+    time_s = time.perf_counter() - t0  # encode -> masking -> decode
     pred = remove_batch_dim(pred)
 
     # Checks: one scene token per kept token, G Gaussians per scene token.

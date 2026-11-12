@@ -5,8 +5,8 @@ Module only, the pipeline lives in experiments/run_masked_zipsplat.py. The maske
 views are packed into one pseudo-view (B, 1, N_fg, D). The fusion blocks carry no positional
 encoding, so decode accepts any token count.
 
-The foreground comes from RMBG-2.0, a token is kept when the average-pooled mask over its patch
-exceeds a threshold.
+The foreground comes from hand-made YOLO polygon labels (CVAT), a token is kept when the
+average-pooled mask over its patch exceeds a threshold.
 
 Limits for now:
     - compression=1.0 only: complexity_kmeans seeds from all V * T patches of the images.
@@ -15,54 +15,34 @@ Limits for now:
 
 import torch
 import torch.nn.functional as F
-from transformers import AutoModelForImageSegmentation
+from PIL import Image, ImageDraw
+from torchvision.transforms.functional import to_tensor
 
 
-def get_background_mask(images):
-    """Foreground mask [(1, h, w), ...] in [0, 1] of the raw views [(3, h, w), ...].
-
-    RMBG-2.0 (BiRefNet), gated on the HF hub: accept the license and log in first. The soft
-    alpha is thresholded in prepare_masks, after the crop and resize.
-    """
-
-    rmbg = AutoModelForImageSegmentation.from_pretrained("briaai/RMBG-2.0", trust_remote_code=True)
-    rmbg = rmbg.cuda().eval()
-    mean = torch.tensor([0.485, 0.456, 0.406], device="cuda")[:, None, None]
-    std = torch.tensor([0.229, 0.224, 0.225], device="cuda")[:, None, None]
-
-    masks = []
-    with torch.no_grad():
-        for im in images:
-            h, w = im.shape[-2:]
-            x = F.interpolate(im[None].cuda(), size=(1024, 1024), mode="bilinear")
-            alpha = rmbg((x - mean) / std)[-1].sigmoid()  # (1, 1, 1024, 1024)
-            alpha = F.interpolate(alpha.float(), size=(h, w), mode="bilinear")
-            masks.append(alpha[0].clamp(0, 1).cpu())
-
-    del rmbg
-    torch.cuda.empty_cache()
-    return masks
-
-
-def apply_boxes(masks, names, boxes):
-    """Masks [(1, h, w), ...] set to 0 outside the hand-drawn box of each view.
+def load_masks(label_dir, image_paths):
+    """Binary foreground masks [(1, h, w), ...] of the raw views, from YOLO segmentation labels.
 
     Args:
-        masks: Soft foreground masks [(1, h, w), ...] of the raw views, from get_background_mask.
-        names: Image file name per view, the keys of boxes.
-        boxes: {name: [x0, y0, x1, y1]} in pixels of the raw view, x1 and y1 exclusive, from
-            experiments/draw_boxes.py.
+        label_dir: Folder with one YOLO label file per view, named like the image (<stem>.txt).
+            Each line is "cls x1 y1 x2 y2 ...", a polygon in coordinates normalized to [0, 1].
+        image_paths: Image path per view, gives the mask size.
+
+    All polygons of a view are filled and merged, regardless of their class.
     """
-    out = []
-    for mask, name in zip(masks, names, strict=True):
-        assert name in boxes, f"no box for {name}"
-        x0, y0, x1, y1 = boxes[name]
-        h, w = mask.shape[-2:]
-        assert 0 <= x0 < x1 <= w and 0 <= y0 < y1 <= h, f"box {boxes[name]} outside {name}"
-        boxed = torch.zeros_like(mask)
-        boxed[..., y0:y1, x0:x1] = mask[..., y0:y1, x0:x1]
-        out.append(boxed)
-    return out
+    masks = []
+    for path in image_paths:
+        label_path = label_dir / f"{path.stem}.txt"
+        assert label_path.exists(), f"no label for {path.name}: {label_path}"
+        polygons = [line.split()[1:] for line in label_path.read_text().splitlines() if line.strip()]
+        assert polygons, f"no polygon in {label_path}"
+        w, h = Image.open(path).size
+        canvas = Image.new("L", (w, h), 0)
+        for coords in polygons:
+            assert len(coords) % 2 == 0 and len(coords) >= 6, f"bad polygon in {label_path}"
+            xy = [(float(x) * w, float(y) * h) for x, y in zip(coords[::2], coords[1::2])]
+            ImageDraw.Draw(canvas).polygon(xy, fill=255)
+        masks.append((to_tensor(canvas) > 0.5).float())  # (1, h, w)
+    return masks
 
 
 def prepare_masks(wrapper, masks, threshold=0.5):
@@ -70,7 +50,7 @@ def prepare_masks(wrapper, masks, threshold=0.5):
 
     Args:
         wrapper: ZipSplat wrapper, its prepare_inputs crops and resizes the images.
-        masks: Soft foreground masks [(1, h, w), ...] from get_background_mask.
+        masks: Foreground masks [(1, h, w), ...] from load_masks.
         threshold: Minimum alpha of a pixel to count as foreground.
     """
     # prepare_inputs expects RGB: masks as 3 channels, keep channel 0.
