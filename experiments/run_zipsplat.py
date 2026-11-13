@@ -16,7 +16,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import lpips
 import torch
+from skimage.metrics import structural_similarity
 from torchvision.utils import save_image
 
 from zipsplat import ZipSplat, load_image
@@ -61,9 +63,24 @@ def main():
     save_image(grid, out / "inputs_vs_render.png", nrow=V)
     pred["gaussians"].save_ply(out / "scene.ply")
 
+    peak_mem_gb = torch.cuda.max_memory_allocated() / 1e9  # before the LPIPS network is loaded
+
     # Metrics: PSNR of the renders on the input views, same keys as the masked script.
     se = (rgb.clamp(0, 1).float() - x.float()) ** 2  # (V, 3, H, W)
     psnr = -10 * se.mean((1, 2, 3)).log10()  # (V,)
+
+    # SSIM and LPIPS, same settings as splatfactory/models/metrics.py.
+    hat, gt = rgb.clamp(0, 1).float(), x.float()  # (V, 3, H, W)
+    ssim = torch.tensor([
+        structural_similarity(
+            g.cpu().numpy(), h.cpu().numpy(), win_size=11, gaussian_weights=True,
+            channel_axis=0, data_range=1.0,
+        )
+        for g, h in zip(gt, hat)
+    ])  # (V,)
+    with torch.no_grad():
+        lpips_fn = lpips.LPIPS(net="vgg", verbose=False).to(gt.device)
+        lpips_val = torch.cat([lpips_fn(g[None], h[None], normalize=True).flatten() for g, h in zip(gt, hat)])
     metrics = {
         "args": vars(args),  # Paths via default=str
         "num_views": V,
@@ -75,12 +92,19 @@ def main():
         "num_gaussians": pred["gaussians"].shape[0],
         "ply_mb": (out / "scene.ply").stat().st_size / 1e6,
         "time_s": time_s,
-        "peak_mem_gb": torch.cuda.max_memory_allocated() / 1e9,
+        "peak_mem_gb": peak_mem_gb,
         "psnr": psnr.mean().item(),
         "psnr_per_view": psnr.tolist(),
+        "ssim": ssim.mean().item(),
+        "ssim_per_view": ssim.tolist(),
+        "lpips": lpips_val.mean().item(),
+        "lpips_per_view": lpips_val.tolist(),
     }
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
-    print(f"psnr {metrics['psnr']:.2f} | {time_s:.2f} s")
+    print(
+        f"psnr {metrics['psnr']:.2f} | ssim {metrics['ssim']:.3f} | lpips {metrics['lpips']:.3f}"
+        f" | {time_s:.2f} s"
+    )
     print(f"saved to {out}")
 
 
