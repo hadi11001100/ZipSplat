@@ -7,6 +7,8 @@ saves the results to experiments/outputs/masking_<date>_<time>/.
 Usage:
     python -m experiments.run_masked_zipsplat experiments/rig/ImageTest2/*.jpg \
         --masks experiments/rig/labels
+    python -m experiments.run_masked_zipsplat experiments/rig/ImageTest2/*.jpg \
+        --masks experiments/rig/labels --ba
 """
 
 import argparse
@@ -20,7 +22,7 @@ import torch
 from skimage.metrics import structural_similarity
 from torchvision.utils import save_image
 
-from experiments.masking import apply_token_masking, load_masks, prepare_masks
+from experiments.masking import MaskedTokenBA, apply_token_masking, load_masks, prepare_masks
 from zipsplat import ZipSplat, load_image
 from zipsplat.utils import remove_batch_dim
 
@@ -31,6 +33,9 @@ def main():
     parser.add_argument("--weights", default="zipsplat")
     parser.add_argument(
         "--masks", type=Path, required=True, help="YOLO polygon labels, one <stem>.txt per image"
+    )
+    parser.add_argument(
+        "--ba", action="store_true", help="refine with MaskedTokenBA (rounds=0, same as the baseline)"
     )
     args = parser.parse_args()
 
@@ -56,8 +61,14 @@ def main():
         # no reference to the full encoding: it is freed before decode
         enc_masked, keep = apply_token_masking(model.encode(x), mask, model.patch_size)
         pred = model.decode(enc_masked, x, compression=1.0)
+    if args.ba:
+        # batched (B == 1), outside autocast like ZipSplat.refine
+        ba_out = MaskedTokenBA(mask, rounds=0)(
+            pred["scene_tokens"], model.gaussian_head, pred["cameras"], pred["poses"], x
+        )
+        pred = {**pred, **ba_out}  # refined gaussians, poses, scene_tokens
     torch.cuda.synchronize()
-    time_s = time.perf_counter() - t0  # encode -> masking -> decode
+    time_s = time.perf_counter() - t0  # encode -> masking -> decode (+ MaskedTokenBA if --ba)
     pred = remove_batch_dim(pred)
 
     # Checks: one scene token per kept token, G Gaussians per scene token.
@@ -70,7 +81,7 @@ def main():
 
     # Render the Gaussians back into the input views, next to the inputs.
     with torch.no_grad():
-        rgb, _ = pred["gaussians"].render(pred["cameras"], pred["poses"])  # (V, 3, H, W)
+        rgb, infos = pred["gaussians"].render(pred["cameras"], pred["poses"])  # (V, 3, H, W)
     out.mkdir(parents=True, exist_ok=True)
     grid = torch.cat([x[0], rgb.clamp(0, 1)], dim=0)  # inputs in row 1, renders in row 2
     save_image(grid, out / "inputs_vs_render.png", nrow=x.shape[1])
@@ -109,6 +120,9 @@ def main():
         lpips_map = torch.cat([lpips_map_fn(g[None], h[None], normalize=True) for g, h in zip(gt, hat)])
         del lpips_map_fn  # (V, 1, H, W)
     lpips_fg = (lpips_map * m).sum((1, 2, 3)) / n_fg.clamp(min=1)  # (V,)
+    # Mean rendered opacity outside the mask: Gaussians leaking into the background (halo).
+    n_bg = (1 - m).sum()
+    alpha_bg = ((infos["alphas"] * (1 - m)).sum() / n_bg.clamp(min=1)).item()
     fg = lambda t: [v if ok else None for v, ok in zip(t.tolist(), has_fg.tolist())]  # noqa: E731
     metrics = {
         "args": vars(args),  # Paths via default=str
@@ -136,11 +150,13 @@ def main():
         "lpips_fg": lpips_fg[has_fg].mean().item() if has_fg.any() else None,
         "lpips_per_view": lpips_val.tolist(),
         "lpips_fg_per_view": fg(lpips_fg),
+        "alpha_bg": alpha_bg,
     }
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
     print(
         f"psnr {metrics['psnr']:.2f} | psnr_fg {metrics['psnr_fg']} | ssim {metrics['ssim']:.3f}"
         f" | ssim_fg {metrics['ssim_fg']} | lpips {metrics['lpips']:.3f} | lpips_fg {metrics['lpips_fg']}"
+        f" | alpha_bg {alpha_bg:.4f}"
         f" | {time_s:.2f} s"
     )
     print(f"saved to {out}")

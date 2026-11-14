@@ -10,13 +10,15 @@ average-pooled mask over its patch exceeds a threshold.
 
 Limits for now:
     - compression=1.0 only: complexity_kmeans seeds from all V * T patches of the images.
-    - no TokenBA (ZipSplat.refine): it expects assignments over all V * T tokens.
+    - TokenBA only as MaskedTokenBA with rounds=0: the PnP camera update expects all V * T tokens.
 """
 
 import torch
 import torch.nn.functional as F
 from PIL import Image, ImageDraw
 from torchvision.transforms.functional import to_tensor
+
+from zipsplat.token_ba import TokenBA
 
 
 def load_masks(label_dir, image_paths):
@@ -90,3 +92,34 @@ def apply_token_masking(enc, mask, patch_size, threshold=0.5):
     }
     return enc_masked, keep
 
+
+class MaskedTokenBA(TokenBA):
+    """TokenBA on masked tokens: RGB loss on the foreground, opacity loss on the whole image.
+
+    The background has no Gaussians, so the RGB L1 only counts foreground pixels. The opacity
+    term pulls the rendered alpha to the mask (1 inside, 0 outside), so foreground Gaussians
+    cannot grow into the background (no halo / floaters at the mask edge).
+    Run with rounds=0: the PnP camera update expects the full V * T patch grid.
+
+    Args:
+        mask: Foreground mask (1, V, H, W) in {0, 1}, same crop and size as the images.
+        alpha_weight: Weight of the opacity term.
+        **kwargs: TokenBA settings.
+    """
+
+    def __init__(self, mask, alpha_weight=1.0, **kwargs):
+        super().__init__(**kwargs)
+        self.mask = mask[:, :, None].float()  # (1, V, 1, H, W)
+        self.alpha_weight = alpha_weight
+
+    def _step(self, optimizer, head, scene_tokens, camera, pose, image):
+        optimizer.zero_grad(set_to_none=True)
+        gaussians = head(scene_tokens, half_mlp=self.half_decoder)
+        rgb, infos = gaussians.render(camera, pose)  # (1, V, 3, H, W), alphas (1, V, 1, H, W)
+        m = self.mask
+        loss_rgb = ((rgb - image).abs() * m).sum() / (3 * m.sum()).clamp(min=1)
+        loss_alpha = (infos["alphas"] - m).abs().mean()
+        loss = loss_rgb + self.alpha_weight * loss_alpha
+        loss.backward()
+        optimizer.step()
+        return loss.detach()

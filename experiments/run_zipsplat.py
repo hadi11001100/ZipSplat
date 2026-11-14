@@ -32,7 +32,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("images", nargs="+", type=Path)
     parser.add_argument("--weights", default="zipsplat")
-    parser.add_argument("--ba", action="store_true", help="refine with TokenBA (off = fair to masking)")
+    parser.add_argument("--ba", action="store_true", help="refine with TokenBA, rounds=0 (same as the masked script)")
     parser.add_argument(
         "--masks", type=Path, default=None,
         help="optional YOLO polygon labels, one <stem>.txt per image: adds foreground metrics",
@@ -60,7 +60,7 @@ def main():
         pred = remove_batch_dim(model(x[None], compression=1.0))
     pred["model_images"], pred["model_cameras"] = x, pred.pop("cameras")
     if args.ba:
-        pred = wrapper.refine(pred)
+        pred = wrapper.refine(pred, rounds=0)  # no PnP camera update, same as the masked script
     torch.cuda.synchronize()
     time_s = time.perf_counter() - t0  # encode -> decode (+ TokenBA if --ba)
 
