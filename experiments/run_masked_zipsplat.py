@@ -9,6 +9,8 @@ Usage:
         --masks experiments/rig/labels
     python -m experiments.run_masked_zipsplat experiments/rig/ImageTest2/*.jpg \
         --masks experiments/rig/labels --ba
+    python -m experiments.run_masked_zipsplat experiments/rig/ImageTest2/*.jpg \
+        --masks experiments/rig/labels --ba --holdout 8
 """
 
 import argparse
@@ -37,6 +39,10 @@ def main():
     parser.add_argument(
         "--ba", action="store_true", help="refine with MaskedTokenBA (rounds=0, same as the baseline)"
     )
+    parser.add_argument(
+        "--holdout", type=int, default=0,
+        help="every K-th view (i %% K == K - 1) is a test view: no Gaussians, no BA, 0 = off",
+    )
     args = parser.parse_args()
 
     # One folder per run, next to this script.
@@ -54,21 +60,39 @@ def main():
     x, _, _ = wrapper.prepare_inputs(images)
     x, mask = x[None], prepare_masks(wrapper, masks)  # (1, V, 3, H, W), (1, V, H, W)
 
+    # Holdout: test views give no tokens (mask 0 for the token selection) and no BA loss. Their
+    # poses still come from the network (cam_token of the full views). View 0 stays a train view.
+    idx = torch.arange(x.shape[1], device=x.device)
+    is_test = (idx % args.holdout == args.holdout - 1) if args.holdout else torch.zeros_like(idx, dtype=torch.bool)
+    tr, te = idx[~is_test], idx[is_test]
+    mask_tok = mask * (~is_test)[None, :, None, None]  # (1, V, H, W)
+
     torch.cuda.reset_peak_memory_stats()
     torch.cuda.synchronize()
     t0 = time.perf_counter()
     with torch.no_grad(), wrapper.autocast():
         # no reference to the full encoding: it is freed before decode
-        enc_masked, keep = apply_token_masking(model.encode(x), mask, model.patch_size)
+        enc_masked, keep = apply_token_masking(model.encode(x), mask_tok, model.patch_size)
         pred = model.decode(enc_masked, x, compression=1.0)
     if args.ba:
         # batched (B == 1), outside autocast like ZipSplat.refine
-        ba_out = MaskedTokenBA(mask, rounds=0)(
-            pred["scene_tokens"], model.gaussian_head, pred["cameras"], pred["poses"], x
+        ba_out = MaskedTokenBA(mask[:, tr], rounds=0)(
+            pred["scene_tokens"], model.gaussian_head, pred["cameras"][:, tr], pred["poses"][:, tr], x[:, tr]
         )
-        pred = {**pred, **ba_out}  # refined gaussians, poses, scene_tokens
+        poses = pred["poses"].data_.clone()  # (1, V, D): refined train poses, network test poses
+        poses[:, tr] = ba_out.pop("poses").data_
+        pred = {**pred, **ba_out, "poses": type(pred["poses"])(poses)}  # refined gaussians, scene_tokens
     torch.cuda.synchronize()
     time_s = time.perf_counter() - t0  # encode -> masking -> decode (+ MaskedTokenBA if --ba)
+    if len(te):
+        # Fair test evaluation (with and without BA alike): align only the test poses to the fixed
+        # scene, joint_token_lr=0 keeps the scene tokens unchanged. Not timed, it is evaluation.
+        test_poses = MaskedTokenBA(mask[:, te], rounds=0, joint_token_lr=0.0)(
+            pred["scene_tokens"], model.gaussian_head, pred["cameras"][:, te], pred["poses"][:, te], x[:, te]
+        )["poses"]
+        poses = pred["poses"].data_.clone()
+        poses[:, te] = test_poses.data_
+        pred["poses"] = type(pred["poses"])(poses)
     pred = remove_batch_dim(pred)
 
     # Checks: one scene token per kept token, G Gaussians per scene token.
@@ -124,6 +148,13 @@ def main():
     n_bg = (1 - m).sum()
     alpha_bg = ((infos["alphas"] * (1 - m)).sum() / n_bg.clamp(min=1)).item()
     fg = lambda t: [v if ok else None for v, ok in zip(t.tolist(), has_fg.tolist())]  # noqa: E731
+    # Train / test split of the foreground metrics (views without foreground left out).
+    alpha_bg_v = (infos["alphas"] * (1 - m)).sum((1, 2, 3)) / (1 - m).sum((1, 2, 3)).clamp(min=1)  # (V,)
+    split = {}
+    for name, sel in (("train", tr), ("test", te)):
+        ok = sel[has_fg[sel]]
+        for key, t in (("psnr_fg", psnr_fg), ("ssim_fg", ssim_fg), ("lpips_fg", lpips_fg), ("alpha_bg", alpha_bg_v)):
+            split[f"{key}_{name}"] = t[ok].mean().item() if len(ok) else None
     metrics = {
         "args": vars(args),  # Paths via default=str
         "num_views": V,
@@ -151,6 +182,7 @@ def main():
         "lpips_per_view": lpips_val.tolist(),
         "lpips_fg_per_view": fg(lpips_fg),
         "alpha_bg": alpha_bg,
+        **({"test_views": te.tolist(), **split} if args.holdout else {}),
     }
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
     print(
@@ -159,6 +191,8 @@ def main():
         f" | alpha_bg {alpha_bg:.4f}"
         f" | {time_s:.2f} s"
     )
+    if args.holdout:
+        print(" | ".join(f"{k} {v:.4f}" for k, v in split.items() if v is not None))
     print(f"saved to {out}")
 
 
