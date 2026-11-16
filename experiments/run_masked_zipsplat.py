@@ -84,14 +84,17 @@ def main():
         pred = {**pred, **ba_out, "poses": type(pred["poses"])(poses)}  # refined gaussians, scene_tokens
     torch.cuda.synchronize()
     time_s = time.perf_counter() - t0  # encode -> masking -> decode (+ MaskedTokenBA if --ba)
-    if len(te):
-        # Fair test evaluation (with and without BA alike): align only the test poses to the fixed
-        # scene, joint_token_lr=0 keeps the scene tokens unchanged. Not timed, it is evaluation.
-        test_poses = MaskedTokenBA(mask[:, te], rounds=0, joint_token_lr=0.0)(
-            pred["scene_tokens"], model.gaussian_head, pred["cameras"][:, te], pred["poses"][:, te], x[:, te]
+    if args.holdout:
+        # Fair evaluation: every view is rendered with a pose aligned to the fixed scene
+        # (joint_token_lr=0 keeps the scene tokens unchanged). With BA only the test views, BA
+        # already refined the train poses; without BA all views. Not timed, it is evaluation.
+        align = te if args.ba else idx
+        aligned_poses = MaskedTokenBA(mask[:, align], rounds=0, joint_token_lr=0.0)(
+            pred["scene_tokens"], model.gaussian_head, pred["cameras"][:, align], pred["poses"][:, align],
+            x[:, align],
         )["poses"]
         poses = pred["poses"].data_.clone()
-        poses[:, te] = test_poses.data_
+        poses[:, align] = aligned_poses.data_
         pred["poses"] = type(pred["poses"])(poses)
     pred = remove_batch_dim(pred)
 
@@ -182,7 +185,7 @@ def main():
         "lpips_per_view": lpips_val.tolist(),
         "lpips_fg_per_view": fg(lpips_fg),
         "alpha_bg": alpha_bg,
-        **({"test_views": te.tolist(), **split} if args.holdout else {}),
+        **({"test_views": te.tolist(), "pose_aligned_views": align.tolist(), **split} if args.holdout else {}),
     }
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
     print(
