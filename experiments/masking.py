@@ -18,6 +18,7 @@ import torch.nn.functional as F
 from PIL import Image, ImageDraw
 from torchvision.transforms.functional import to_tensor
 
+from zipsplat.clustering import kmeans, photo_complexity_weights
 from zipsplat.token_ba import TokenBA
 
 
@@ -92,6 +93,36 @@ def apply_token_masking(enc, mask, patch_size, threshold=0.5):
     }
     return enc_masked, keep
 
+
+
+def masked_cluster(geo_tokens, images, compression, keep, patch_size):
+    """ZipSplat.cluster on the masked tokens: k-means seeds from the foreground tokens only.
+
+    ZipSplat.cluster computes the complexity weights over all V * T tokens of the images, the
+    masked geo_tokens only hold the N_fg foreground ones, so the weights are masked the same way.
+    Drop-in for model.cluster (bind keep and patch_size with functools.partial).
+
+    Args:
+        geo_tokens: Masked geometry tokens (1, 1, N_fg, D).
+        images: Model images (1, V, 3, H, W) in [0, 1].
+        compression: Fraction of the N_fg tokens kept as scene tokens, in (0, 1].
+        keep: Foreground flag per token (V * T,) from apply_token_masking.
+        patch_size: Pixels per token side.
+
+    Returns:
+        nearest_idx (1, K), assignments (1, N_fg).
+    """
+    B, V, T, _ = geo_tokens.shape
+    if compression >= 1.0:
+        idx = torch.arange(V * T, device=geo_tokens.device).unsqueeze(0).expand(B, -1)
+        return idx, idx
+    K = max(1, int(V * T * compression))
+    pH, pW = images.shape[-2] // patch_size, images.shape[-1] // patch_size
+    weights = photo_complexity_weights(images, pH, pW)[:, keep]  # (1, N_fg)
+    assert weights.shape[1] == V * T
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16):
+        _, nearest_idx, assignments = kmeans(geo_tokens.reshape(B, V * T, -1), K, init_weights=weights)
+    return nearest_idx, assignments
 
 class MaskedTokenBA(TokenBA):
     """TokenBA on masked tokens: RGB loss on the foreground, opacity loss on the whole image.

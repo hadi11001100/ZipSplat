@@ -11,11 +11,14 @@ Usage:
         --masks experiments/rig/labels --ba
     python -m experiments.run_masked_zipsplat experiments/rig/ImageTest2/*.jpg \
         --masks experiments/rig/labels --ba --holdout 8
+    python -m experiments.run_masked_zipsplat experiments/rig/ImageTest2/*.jpg \
+        --masks experiments/rig/labels --sparse experiments/sparse/0 --compression 0.25
 """
 
 import argparse
 import json
 import time
+from functools import partial
 from datetime import datetime
 from pathlib import Path
 
@@ -24,9 +27,48 @@ import torch
 from skimage.metrics import structural_similarity
 from torchvision.utils import save_image
 
-from experiments.masking import MaskedTokenBA, apply_token_masking, load_masks, prepare_masks
-from zipsplat import ZipSplat, load_image
+from experiments.masking import (
+    MaskedTokenBA, apply_token_masking, load_masks, masked_cluster, prepare_masks,
+)
+from zipsplat import Camera, Pose, ZipSplat, load_image
+from zipsplat.pose import quaternion_to_matrix
 from zipsplat.utils import remove_batch_dim
+
+
+def load_colmap_priors(sparse, names, offset, scale):
+    """COLMAP text model -> camera priors for the backbone, in the model input frame.
+
+    Like the training data (splatfactory/datasets/multi_view_dataset.py): c2w OpenCV poses
+    relative to view 0, translations divided by the median distance of the sparse points from
+    view 0 (training: of the depth points). Lens distortion is ignored.
+
+    Args:
+        sparse: Folder with cameras.txt, images.txt, points3D.txt.
+        names: Image file names (V,), in input order.
+        offset, scale: (V, 2) crop offset and scale from ZipSplat.prepare_inputs.
+
+    Returns:
+        c2w poses (V,) and the focal lengths and principal points (V, 2) in model pixels.
+    """
+    lines = lambda f: [l.split() for l in (sparse / f).read_text().splitlines() if l and l[0] != "#"]  # noqa: E731
+    cams = {c[0]: [float(v) for v in c[4:8]] for c in lines("cameras.txt")}  # PINHOLE/OPENCV: fx fy cx cy
+    by_name = {l[9]: l for l in lines("images.txt")[::2]}  # every 2nd line is the POINTS2D list
+    missing = [n for n in names if n not in by_name]
+    assert not missing, f"not in {sparse / 'images.txt'}: {missing}"
+    rows = [by_name[n] for n in names]
+    q = torch.tensor([[float(v) for v in r[1:5]] for r in rows])  # (V, 4) wxyz, world-to-cam
+    t = torch.tensor([[float(v) for v in r[5:8]] for r in rows])  # (V, 3)
+    w2c = Pose.from_Rt(quaternion_to_matrix(q[:, [1, 2, 3, 0]]), t)
+    c2w = w2c.inv()
+    poses = c2w[0].inv() @ c2w  # view 0 = identity
+    xyz = torch.tensor([[float(v) for v in l[1:4]] for l in lines("points3D.txt")])  # (N, 3) world
+    d = w2c[0].transform(xyz).norm(dim=-1).median()  # distance from view 0, frame-invariant
+    poses = Pose.from_Rt(poses.R, poses.t / d)
+
+    fxfycxcy = torch.tensor([cams[r[8]] for r in rows]).to(offset)  # (V, 4)
+    f = fxfycxcy[:, :2] * scale
+    c = (fxfycxcy[:, 2:] - offset) * scale  # inverse of ZipSplat.forward's camera mapping
+    return poses.to(offset.device), f, c
 
 
 def main():
@@ -43,7 +85,17 @@ def main():
         "--holdout", type=int, default=0,
         help="every K-th view (i %% K == K - 1) is a test view: no Gaussians, no BA, 0 = off",
     )
+    parser.add_argument(
+        "--sparse", type=Path, default=None,
+        help="COLMAP text model (cameras/images/points3D.txt): its poses and intrinsics are fed "
+        "to the backbone as camera priors",
+    )
+    parser.add_argument(
+        "--compression", type=float, default=1.0,
+        help="compression r: fraction of the kept tokens that become scene tokens, (0, 1]",
+    )
     args = parser.parse_args()
+    assert 0 < args.compression <= 1, "--compression must be in (0, 1]"
 
     # One folder per run, next to this script.
     out = Path(__file__).parent / "outputs" / f"masking_{datetime.now():%Y-%m-%d_%H-%M-%S}"
@@ -57,8 +109,19 @@ def main():
     model = wrapper.model
 
     # Same center crop and resize for images and masks.
-    x, _, _ = wrapper.prepare_inputs(images)
+    x, offset, scale = wrapper.prepare_inputs(images)
     x, mask = x[None], prepare_masks(wrapper, masks)  # (1, V, 3, H, W), (1, V, H, W)
+
+    # Optional camera priors from COLMAP (c2w, view 0 = identity), at the model input resolution.
+    priors = {}
+    if args.sparse:
+        V, H, W = x.shape[1], x.shape[-2], x.shape[-1]
+        prior_poses, f, c = load_colmap_priors(args.sparse, [p.name for p in args.images], offset, scale)
+        size = torch.tensor([W, H], dtype=f.dtype, device=f.device).expand(V, 2)
+        prior_cams = Camera(torch.cat([size, f, c], -1))
+        assert prior_poses.shape == (V,) and prior_cams.shape == (V,)
+        assert torch.allclose(prior_poses[0].Rt, torch.eye(4, device=x.device), atol=1e-5)
+        priors = {"poses": prior_poses[None], "cameras": prior_cams[None]}  # (1, V)
 
     # Holdout: test views give no tokens (mask 0 for the token selection) and no BA loss. Their
     # poses still come from the network (cam_token of the full views). View 0 stays a train view.
@@ -72,8 +135,10 @@ def main():
     t0 = time.perf_counter()
     with torch.no_grad(), wrapper.autocast():
         # no reference to the full encoding: it is freed before decode
-        enc_masked, keep = apply_token_masking(model.encode(x), mask_tok, model.patch_size)
-        pred = model.decode(enc_masked, x, compression=1.0)
+        enc_masked, keep = apply_token_masking(model.encode(x, **priors), mask_tok, model.patch_size)
+        # k-means (compression < 1) has to seed from the foreground tokens only
+        model.cluster = partial(masked_cluster, keep=keep, patch_size=model.patch_size)
+        pred = model.decode(enc_masked, x, compression=args.compression)
     if args.ba:
         # batched (B == 1), outside autocast like ZipSplat.refine
         ba_out = MaskedTokenBA(mask[:, tr], rounds=0)(
@@ -98,13 +163,14 @@ def main():
         pred["poses"] = type(pred["poses"])(poses)
     pred = remove_batch_dim(pred)
 
-    # Checks: one scene token per kept token, G Gaussians per scene token.
+    # Checks: K = r * kept tokens scene tokens (all at r = 1), G Gaussians per scene token.
     N_fg = int(keep.sum())
+    K = N_fg if args.compression >= 1.0 else max(1, int(N_fg * args.compression))
     G = model.gaussian_head.gaussians_per_token
     assert enc_masked["geo_tokens"].shape[2] == N_fg
-    assert pred["scene_tokens"].shape[0] == N_fg
-    assert pred["gaussians"].shape[0] == N_fg * G
-    print(f"kept {N_fg} / {keep.numel()} tokens -> {pred['gaussians'].shape[0]} Gaussians")
+    assert pred["scene_tokens"].shape[0] == K
+    assert pred["gaussians"].shape[0] == K * G
+    print(f"kept {N_fg} / {keep.numel()} tokens -> {K} scene tokens -> {pred['gaussians'].shape[0]} Gaussians")
 
     # Render the Gaussians back into the input views, next to the inputs.
     with torch.no_grad():
@@ -166,6 +232,7 @@ def main():
         "tokens_kept": N_fg,
         "tokens_total": keep.numel(),
         "keep_ratio": N_fg / keep.numel(),
+        "scene_tokens": K,
         "tokens_kept_per_view": keep.view(V, -1).sum(1).tolist(),
         "num_gaussians": pred["gaussians"].shape[0],
         "ply_mb": (out / "scene.ply").stat().st_size / 1e6,
