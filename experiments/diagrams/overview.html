@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Masked ZipSplat Overview</title>
+  <style>
+    /* Paper figure: fixed light palette on purpose (print/PDF). */
+    :root {
+      --fg: #1d1d1f;
+      --muted: #6b6e75;
+      --line: #3f4046;
+      --orig-fill: #f2f2f4;
+      --orig-stroke: #8f9098;
+      --inner-fill: #ffffff;
+      --mod-fill: #e7f0fb;
+      --mod-stroke: #2f6fc0;
+      --new-fill: #fdf0e3;
+      --new-stroke: #d9822b;
+      --tok: #d9e2ee;
+      --c1: #2a9d8f;
+      --c2: #e9c46a;
+      --c3: #8e6fd1;
+      --c4: #e0569b;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 24px 16px;
+      background: #ffffff;
+      color: var(--fg);
+      font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    }
+
+    svg { display: block; width: 100%; max-width: 1500px; height: auto; margin: 0 auto; }
+    svg text { fill: var(--fg); font-size: 15px; }
+    svg .t { font-size: 17px; }
+    svg .s { font-size: 13px; fill: var(--muted); }
+    svg .math { font-family: "Times New Roman", Times, serif; font-style: italic; font-size: 17px; }
+    svg .brand { font-family: "Times New Roman", Times, serif; font-weight: 700; font-size: 26px; }
+
+    .orig { fill: var(--orig-fill); stroke: var(--orig-stroke); stroke-width: 1.8; }
+    .inner { fill: var(--inner-fill); stroke: var(--orig-stroke); stroke-width: 1.6; }
+    .mod { fill: var(--mod-fill); stroke: var(--mod-stroke); stroke-width: 2; }
+    .new { fill: var(--new-fill); stroke: var(--new-stroke); stroke-width: 2; }
+    .dash { fill: none; stroke: var(--line); stroke-width: 1.4; stroke-dasharray: 6 4; }
+    .opt { stroke-dasharray: 6 4; }
+    .frame { fill: none; stroke: var(--line); stroke-width: 1.8; }
+    .wire { fill: none; stroke: var(--line); stroke-width: 1.6; }
+    .wire.o { stroke-dasharray: 6 4; }
+
+    @media print {
+      @page { size: 1500px 450px; margin: 0; }
+      body { padding: 0; }
+      svg { max-width: none; }
+    }
+  </style>
+</head>
+
+<body>
+  <svg viewBox="0 0 1500 450" role="img" aria-label="Masked ZipSplat pipeline overview">
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0,0 L10,5 L0,10 z" fill="#3f4046" />
+      </marker>
+      <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#cfdcea" />
+        <stop offset="0.6" stop-color="#e9edf2" />
+        <stop offset="1" stop-color="#b9b4ab" />
+      </linearGradient>
+      <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+        <feGaussianBlur stdDeviation="2.6" />
+      </filter>
+    </defs>
+
+    <!-- ================= Inputs ================= -->
+    <text x="100" y="30" text-anchor="middle">Multi-View Input</text>
+    <g stroke="#6b6e75" stroke-width="1.2">
+      <rect x="48" y="40" width="120" height="84" rx="4" fill="url(#sky)" />
+      <rect x="40" y="48" width="120" height="84" rx="4" fill="url(#sky)" />
+      <rect x="32" y="56" width="120" height="84" rx="4" fill="url(#sky)" />
+      <rect x="24" y="64" width="120" height="84" rx="4" fill="url(#sky)" />
+    </g>
+    <path d="M58,126 q6,-26 30,-26 q22,0 30,14 q8,2 8,12 z" fill="#5d5550" />
+    <circle cx="70" cy="128" r="7" fill="#2d2a28" />
+    <circle cx="114" cy="128" r="7" fill="#2d2a28" />
+
+    <text x="100" y="196" text-anchor="middle">Optional:</text>
+    <text x="100" y="214" text-anchor="middle">Camera + Pose</text>
+
+    <text x="100" y="268" text-anchor="middle">Foreground Masks</text>
+    <g stroke="var(--new-stroke)" stroke-width="1.6">
+      <rect x="62" y="280" width="84" height="54" rx="3" fill="#111" />
+      <rect x="56" y="286" width="84" height="54" rx="3" fill="#111" />
+      <rect x="50" y="292" width="84" height="54" rx="3" fill="#111" />
+    </g>
+    <path d="M70,336 q4,-18 22,-18 q16,0 22,10 q6,1 6,8 z" fill="#fff" />
+
+    <text x="100" y="372" text-anchor="middle">Compression <tspan class="math">r</tspan></text>
+    <line x1="30" y1="390" x2="170" y2="390" stroke="var(--line)" stroke-width="2.4" />
+    <line x1="30" y1="382" x2="30" y2="398" stroke="var(--line)" stroke-width="2.4" />
+    <line x1="170" y1="382" x2="170" y2="398" stroke="var(--line)" stroke-width="2.4" />
+    <circle cx="128" cy="390" r="7" fill="var(--c1)" stroke="#1f6f66" stroke-width="1.2" />
+    <text class="s" x="30" y="414" text-anchor="middle">efficiency</text>
+    <text class="s" x="170" y="414" text-anchor="middle">quality</text>
+
+    <!-- input wires -->
+    <path class="wire" d="M168,96 H248" marker-end="url(#ah)" />
+    <!-- switch for optional priors -->
+    <path class="wire" d="M164,205 H184" />
+    <circle cx="185" cy="205" r="3" fill="var(--line)" />
+    <path class="wire" d="M185,205 L203,193" />
+    <circle cx="207" cy="205" r="3" fill="var(--line)" />
+    <path class="wire" d="M207,205 H248" marker-end="url(#ah)" />
+    <path class="wire" d="M146,322 H383" marker-end="url(#ah)" />
+    <path class="wire" d="M176,390 H655 V347" marker-end="url(#ah)" />
+
+    <!-- ================= Model frame ================= -->
+    <rect class="frame" x="222" y="16" width="972" height="392" rx="14" />
+    <text class="brand" x="1178" y="396" text-anchor="end">Masked ZipSplat</text>
+
+    <!-- Backbone -->
+    <rect class="orig" x="250" y="40" width="100" height="262" rx="12" />
+    <text class="t" x="300" y="164" text-anchor="middle">Multi-View</text>
+    <text class="t" x="300" y="186" text-anchor="middle">Backbone</text>
+    <path class="wire" d="M350,100 H383" marker-end="url(#ah)" />
+
+    <!-- Visual tokens -->
+    <rect class="dash" x="385" y="40" width="170" height="114" rx="8" />
+    <text class="t" x="470" y="62" text-anchor="middle"><tspan class="math">T</tspan> Visual Tokens</text>
+    <g fill="var(--tok)" stroke="#8ea3bd" stroke-width="1">
+      <rect x="402" y="74" width="16" height="16" rx="2" /><rect x="426" y="74" width="16" height="16" rx="2" /><rect x="450" y="74" width="16" height="16" rx="2" /><rect x="474" y="74" width="16" height="16" rx="2" /><rect x="498" y="74" width="16" height="16" rx="2" /><rect x="522" y="74" width="16" height="16" rx="2" />
+      <rect x="402" y="98" width="16" height="16" rx="2" /><rect x="426" y="98" width="16" height="16" rx="2" /><rect x="450" y="98" width="16" height="16" rx="2" /><rect x="474" y="98" width="16" height="16" rx="2" /><rect x="498" y="98" width="16" height="16" rx="2" /><rect x="522" y="98" width="16" height="16" rx="2" />
+      <rect x="402" y="122" width="16" height="16" rx="2" /><rect x="426" y="122" width="16" height="16" rx="2" /><rect x="450" y="122" width="16" height="16" rx="2" /><rect x="474" y="122" width="16" height="16" rx="2" /><rect x="498" y="122" width="16" height="16" rx="2" /><rect x="522" y="122" width="16" height="16" rx="2" />
+    </g>
+    <path class="wire" d="M470,154 V193" marker-end="url(#ah)" />
+
+    <!-- Token masking (new) -->
+    <rect class="new" x="385" y="195" width="170" height="150" rx="12" />
+    <text class="t" x="470" y="219" text-anchor="middle">Token Masking</text>
+    <g fill="none" stroke="#c9c9cf" stroke-width="1" stroke-dasharray="3 2">
+      <rect x="402" y="234" width="16" height="16" rx="2" /><rect x="426" y="234" width="16" height="16" rx="2" /><rect x="498" y="234" width="16" height="16" rx="2" /><rect x="522" y="234" width="16" height="16" rx="2" />
+      <rect x="402" y="258" width="16" height="16" rx="2" /><rect x="522" y="258" width="16" height="16" rx="2" />
+      <rect x="402" y="282" width="16" height="16" rx="2" /><rect x="426" y="282" width="16" height="16" rx="2" /><rect x="522" y="282" width="16" height="16" rx="2" />
+    </g>
+    <g fill="#f3b77a" stroke="var(--new-stroke)" stroke-width="1">
+      <rect x="450" y="234" width="16" height="16" rx="2" /><rect x="474" y="234" width="16" height="16" rx="2" />
+      <rect x="426" y="258" width="16" height="16" rx="2" /><rect x="450" y="258" width="16" height="16" rx="2" /><rect x="474" y="258" width="16" height="16" rx="2" /><rect x="498" y="258" width="16" height="16" rx="2" />
+      <rect x="450" y="282" width="16" height="16" rx="2" /><rect x="474" y="282" width="16" height="16" rx="2" /><rect x="498" y="282" width="16" height="16" rx="2" />
+    </g>
+    <text class="s" x="470" y="330" text-anchor="middle"><tspan class="math" style="font-size:15px">N</tspan><tspan baseline-shift="sub" font-size="10">fg</tspan> foreground tokens</text>
+    <path class="wire" d="M555,270 H588" marker-end="url(#ah)" />
+
+    <!-- K,V path from masked tokens -->
+    <text x="700" y="168" text-anchor="middle">K, V</text>
+
+    <!-- K-Means (modified) -->
+    <rect class="mod" x="590" y="195" width="130" height="150" rx="12" />
+    <text class="t" x="655" y="219" text-anchor="middle">K-Means</text>
+    <path d="M606,236 V300 H706" fill="none" stroke="var(--line)" stroke-width="1.2" />
+    <g>
+      <circle cx="624" cy="250" r="3.2" fill="var(--c1)" /><circle cx="632" cy="244" r="3.2" fill="var(--c1)" /><circle cx="630" cy="256" r="3.2" fill="var(--c1)" /><circle cx="639" cy="250" r="3.2" fill="var(--c1)" />
+      <circle cx="676" cy="246" r="3.2" fill="var(--c2)" /><circle cx="684" cy="252" r="3.2" fill="var(--c2)" /><circle cx="690" cy="244" r="3.2" fill="var(--c2)" /><circle cx="681" cy="240" r="3.2" fill="var(--c2)" />
+      <circle cx="628" cy="284" r="3.2" fill="var(--c3)" /><circle cx="636" cy="278" r="3.2" fill="var(--c3)" /><circle cx="640" cy="288" r="3.2" fill="var(--c3)" /><circle cx="622" cy="291" r="3.2" fill="var(--c3)" />
+      <circle cx="670" cy="282" r="3.2" fill="var(--c4)" /><circle cx="680" cy="276" r="3.2" fill="var(--c4)" /><circle cx="684" cy="287" r="3.2" fill="var(--c4)" /><circle cx="674" cy="291" r="3.2" fill="var(--c4)" />
+    </g>
+    <text x="655" y="330" text-anchor="middle"><tspan class="math">K = r · N</tspan><tspan baseline-shift="sub" font-size="11">fg</tspan></text>
+    <path class="wire" d="M720,270 H743" marker-end="url(#ah)" />
+
+    <!-- Q -->
+    <rect class="dash" x="745" y="205" width="40" height="137" rx="6" />
+    <text class="t" x="765" y="226" text-anchor="middle">Q</text>
+    <rect x="754" y="236" width="22" height="22" rx="3" fill="var(--c1)" />
+    <rect x="754" y="262" width="22" height="22" rx="3" fill="var(--c2)" />
+    <rect x="754" y="288" width="22" height="22" rx="3" fill="var(--c3)" />
+    <rect x="754" y="314" width="22" height="22" rx="3" fill="var(--c4)" />
+
+    <!-- Token aggregation (unchanged) -->
+    <rect class="orig" x="808" y="40" width="208" height="305" rx="12" />
+    <text class="t" x="905" y="63" text-anchor="middle">Token Aggregation</text>
+    <text x="1004" y="62" text-anchor="end">× <tspan class="math">L</tspan></text>
+    <rect class="inner" x="825" y="80" width="80" height="250" rx="12" />
+    <text x="865" y="198" text-anchor="middle">Cross-</text>
+    <text x="865" y="218" text-anchor="middle">Attention</text>
+    <rect class="inner" x="922" y="80" width="80" height="250" rx="12" />
+    <text x="962" y="198" text-anchor="middle">Self-</text>
+    <text x="962" y="218" text-anchor="middle">Attention</text>
+    <path class="wire" d="M540,195 V176 H823" marker-end="url(#ah)" />
+    <path class="wire" d="M785,288 H823" marker-end="url(#ah)" />
+    <path class="wire" d="M905,205 H920" marker-end="url(#ah)" />
+    <path class="wire" d="M1002,198 H1033" marker-end="url(#ah)" />
+
+    <!-- Z -->
+    <rect class="dash" x="1035" y="128" width="40" height="137" rx="6" />
+    <text class="t" x="1055" y="149" text-anchor="middle">Z</text>
+    <rect x="1044" y="159" width="22" height="22" rx="3" fill="var(--c1)" />
+    <rect x="1044" y="185" width="22" height="22" rx="3" fill="var(--c2)" />
+    <rect x="1044" y="211" width="22" height="22" rx="3" fill="var(--c3)" />
+    <rect x="1044" y="237" width="22" height="22" rx="3" fill="var(--c4)" />
+    <path class="wire" d="M1075,198 H1092" marker-end="url(#ah)" />
+
+    <!-- MLP (unchanged) -->
+    <rect class="orig" x="1094" y="118" width="84" height="158" rx="12" />
+    <text class="t" x="1136" y="160" text-anchor="middle">MLP</text>
+    <text x="1136" y="200" text-anchor="middle" style="font-size:14px">One Token</text>
+    <text x="1136" y="221" text-anchor="middle">↓</text>
+    <text x="1136" y="242" text-anchor="middle" style="font-size:14px"><tspan class="math" style="font-size:15px">G</tspan> Gaussians</text>
+
+    <!-- Masked BA (modified, optional) -->
+    <path class="wire o" d="M1136,276 V296" marker-end="url(#ah)" />
+    <rect class="mod opt" x="1094" y="298" width="84" height="56" rx="10" />
+    <text x="1136" y="322" text-anchor="middle" style="font-size:14px">Masked BA</text>
+    <text class="s" x="1136" y="341" text-anchor="middle">(optional)</text>
+
+    <!-- output wires -->
+    <path class="wire" d="M1178,198 H1238" marker-end="url(#ah)" />
+    <path class="wire o" d="M1094,326 H1055 V267" marker-end="url(#ah)" />
+    <text class="s" x="1060" y="318" text-anchor="start" style="font-size:11px">refine</text>
+
+    <!-- ================= Output ================= -->
+    <text x="1365" y="34" text-anchor="middle">Gaussian Reconstruction</text>
+    <text class="s" x="1365" y="54" text-anchor="middle">foreground only</text>
+    <g filter="url(#soft)" opacity="0.85">
+      <!-- c1: rear -->
+      <ellipse cx="1282" cy="214" rx="26" ry="18" fill="var(--c1)" transform="rotate(-12 1282 214)" />
+      <ellipse cx="1298" cy="238" rx="24" ry="15" fill="var(--c1)" />
+      <ellipse cx="1270" cy="236" rx="16" ry="12" fill="var(--c1)" />
+      <ellipse cx="1300" cy="200" rx="18" ry="12" fill="var(--c1)" transform="rotate(20 1300 200)" />
+      <!-- c2: top / cabin -->
+      <ellipse cx="1338" cy="168" rx="30" ry="16" fill="var(--c2)" />
+      <ellipse cx="1370" cy="160" rx="24" ry="14" fill="var(--c2)" transform="rotate(-8 1370 160)" />
+      <ellipse cx="1324" cy="190" rx="20" ry="13" fill="var(--c2)" />
+      <ellipse cx="1360" cy="186" rx="22" ry="12" fill="var(--c2)" />
+      <!-- c3: front -->
+      <ellipse cx="1420" cy="210" rx="28" ry="17" fill="var(--c3)" transform="rotate(10 1420 210)" />
+      <ellipse cx="1446" cy="232" rx="22" ry="14" fill="var(--c3)" />
+      <ellipse cx="1398" cy="196" rx="18" ry="12" fill="var(--c3)" />
+      <ellipse cx="1426" cy="240" rx="18" ry="11" fill="var(--c3)" />
+      <!-- c4: body / underside -->
+      <ellipse cx="1350" cy="226" rx="34" ry="18" fill="var(--c4)" />
+      <ellipse cx="1384" cy="236" rx="26" ry="15" fill="var(--c4)" transform="rotate(6 1384 236)" />
+      <ellipse cx="1334" cy="254" rx="24" ry="12" fill="var(--c4)" />
+      <ellipse cx="1372" cy="208" rx="20" ry="12" fill="var(--c4)" />
+    </g>
+    <g fill="#2d2a28" opacity="0.9" filter="url(#soft)">
+      <ellipse cx="1298" cy="270" rx="17" ry="17" />
+      <ellipse cx="1426" cy="270" rx="17" ry="17" />
+    </g>
+
+    <!-- ================= Legend ================= -->
+    <g transform="translate(440 432)">
+      <rect class="orig" x="0" y="-12" width="22" height="14" rx="3" />
+      <text class="s" x="30" y="0">ZipSplat (unchanged)</text>
+      <rect class="mod" x="190" y="-12" width="22" height="14" rx="3" />
+      <text class="s" x="220" y="0">modified</text>
+      <rect class="new" x="310" y="-12" width="22" height="14" rx="3" />
+      <text class="s" x="340" y="0">new</text>
+      <rect x="400" y="-12" width="22" height="14" rx="3" fill="none" stroke="#3f4046" stroke-width="1.4" stroke-dasharray="4 3" />
+      <text class="s" x="430" y="0">optional</text>
+    </g>
+  </svg>
+</body>
+
+</html>
