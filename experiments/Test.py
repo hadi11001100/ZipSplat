@@ -11,7 +11,10 @@ psnr_fg_test means that the test camera did not follow the pose drift of the BA.
 Usage:
     source .venv/bin/activate
     python -m experiments.Test experiments/rig/ImageTest2/*.jpg --masks experiments/rig/labels --dry-run
+    
+    # Run all cases
     python -m experiments.Test experiments/rig/ImageTest2/*.jpg --masks experiments/rig/labels
+    
     python -m experiments.Test experiments/rig/ImageTest2/*.jpg --masks experiments/rig/labels \
         --filter plain_ba --compression 1.0 0.25 --sparse experiments/sparse/0
 """

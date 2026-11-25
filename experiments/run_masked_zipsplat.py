@@ -296,7 +296,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     grid = torch.cat([x[0], rgb.clamp(0, 1)], dim=0)  # inputs in row 1, renders in row 2
     save_image(grid, out / "inputs_vs_render.png", nrow=x.shape[1])
-    save_image(mask[0, :, None], out / "masks.png", nrow=x.shape[1])
+    grid = torch.cat([x[0], mask[0, :, None].expand(-1, 3, -1, -1)], dim=0)  # inputs in row 1, masks in row 2
+    save_image(grid, out / "masks.png", nrow=x.shape[1])
     pred["gaussians"].save_ply(out / "scene.ply")
 
     peak_mem_gb = torch.cuda.max_memory_allocated() / 1e9  # before the LPIPS network is loaded
