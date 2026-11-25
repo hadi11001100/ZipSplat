@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import gc
 import json
 import time
 from functools import partial
@@ -32,6 +33,7 @@ from experiments.masking import (
 )
 from zipsplat import Camera, Pose, ZipSplat, load_image
 from zipsplat.pose import quaternion_to_matrix
+from zipsplat.token_ba import TokenBA
 from zipsplat.utils import remove_batch_dim
 
 
@@ -71,6 +73,73 @@ def load_colmap_priors(sparse, names, offset, scale):
     return poses.to(offset.device), f, c
 
 
+def select_views(enc, views):
+    """ZipSplat.encode output with the tokens of some views only, cam_token keeps all views."""
+    return {
+        "layer_tokens": [t[:, views] for t in enc["layer_tokens"]],
+        "geo_tokens": enc["geo_tokens"][:, views],
+        "color_tokens": enc["color_tokens"][:, views],
+        "cam_token": enc["cam_token"],
+    }
+
+
+def free_network(model):
+    """Delete everything but the Gaussian head, BA needs the memory. Nothing can be decoded after."""
+    for name in [n for n, _ in model.named_children() if n != "gaussian_head"]:
+        delattr(model, name)
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+def pose_drift(a, b):
+    """Rotation (degrees) and camera center distance (scene units), each (V,), of poses (V,)."""
+    return (a.inv() @ b).magnitude()
+
+
+def drift_stats(name, a, b):
+    """Mean and max pose_drift between poses a and b (V,), as metrics entries."""
+    rot, trans = pose_drift(a, b)
+    return {
+        f"{name}_deg_mean": rot.mean().item(), f"{name}_deg_max": rot.max().item(),
+        f"{name}_t_mean": trans.mean().item(), f"{name}_t_max": trans.max().item(),
+    }
+
+
+def moved_start(test, train_old, train_new):
+    """Test poses (V_te,) carried along by the correction of the nearest train view.
+
+    BA does not anchor view 0 and only moves the train poses (V_tr,), the test poses stay behind.
+    """
+    near = torch.cdist(test.t, train_old.t).argmin(1)  # (V_te,), nearest camera center
+    return train_new[near] @ train_old[near].inv() @ test
+
+
+def foreground_metrics(rgb, gt, m):
+    """psnr_fg, ssim_fg, lpips_fg averaged over the views with foreground, as in main.
+
+    Args: rgb, gt (V, 3, H, W) in [0, 1], mask m (V, 1, H, W).
+    """
+    ok = m.sum((1, 2, 3)) > 0
+    if not ok.any():
+        return {"psnr_fg": None, "ssim_fg": None, "lpips_fg": None}
+    hat, gt, m = rgb.clamp(0, 1).float()[ok], gt.float()[ok], m[ok]
+    n = m.sum((1, 2, 3))  # (V,)
+    psnr = -10 * ((((hat - gt) ** 2) * m).sum((1, 2, 3)) / (3 * n)).log10()
+    ssim_map = torch.stack([
+        torch.from_numpy(structural_similarity(
+            g.cpu().numpy(), h.cpu().numpy(), win_size=11, gaussian_weights=True,
+            channel_axis=0, data_range=1.0, full=True,
+        )[1])
+        for g, h in zip(gt, hat)
+    ]).to(m)  # (V, 3, H, W)
+    ssim = (ssim_map * m).sum((1, 2, 3)) / (3 * n)
+    with torch.no_grad():
+        lpips_fn = lpips.LPIPS(net="vgg", spatial=True, verbose=False).to(gt.device)
+        lpips_map = torch.cat([lpips_fn(g[None], h[None], normalize=True) for g, h in zip(gt, hat)])
+    lpips_fg = (lpips_map * m).sum((1, 2, 3)) / n
+    return {"psnr_fg": psnr.mean().item(), "ssim_fg": ssim.mean().item(), "lpips_fg": lpips_fg.mean().item()}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("images", nargs="+", type=Path)
@@ -94,11 +163,22 @@ def main():
         "--compression", type=float, default=1.0,
         help="compression r: fraction of the kept tokens that become scene tokens, (0, 1]",
     )
+    parser.add_argument(
+        "--threshold", type=float, default=0.5,
+        help="minimum foreground fraction (exclusive) of a patch to keep its token",
+    )
+    parser.add_argument("--alpha-weight", type=float, default=1.0, help="opacity loss weight of the BA")
+    parser.add_argument(
+        "--init-ba-rounds", type=int, default=0,
+        help="start the BA from the poses of an unmasked TokenBA with this many PnP rounds, 0 = off",
+    )
+    parser.add_argument("--out", type=Path, default=None, help="output folder, default: outputs/masking_<time>")
     args = parser.parse_args()
+    assert args.ba or not args.init_ba_rounds, "--init-ba-rounds needs --ba"
     assert 0 < args.compression <= 1, "--compression must be in (0, 1]"
 
     # One folder per run, next to this script.
-    out = Path(__file__).parent / "outputs" / f"masking_{datetime.now():%Y-%m-%d_%H-%M-%S}"
+    out = args.out or Path(__file__).parent / "outputs" / f"masking_{datetime.now():%Y-%m-%d_%H-%M-%S}"
 
     # Masks first: a missing or mis-sized mask fails before ZipSplat loads.
     masks = load_masks(args.masks, args.images)
@@ -134,21 +214,49 @@ def main():
     torch.cuda.synchronize()
     t0 = time.perf_counter()
     with torch.no_grad(), wrapper.autocast():
-        # no reference to the full encoding: it is freed before decode
-        enc_masked, keep = apply_token_masking(model.encode(x, **priors), mask_tok, model.patch_size)
+        enc = model.encode(x, **priors)
+        if args.init_ba_rounds:  # before model.cluster is replaced and the network freed
+            init_tokens = model.decode(select_views(enc, tr), x[:, tr])["scene_tokens"]  # (1, V_tr * T, D)
+            assert init_tokens.shape[1] == len(tr) * enc["geo_tokens"].shape[2]
+        enc_masked, keep = apply_token_masking(enc, mask_tok, model.patch_size, args.threshold)
+        del enc  # no reference to the full encoding: it is freed before decode
         # k-means (compression < 1) has to seed from the foreground tokens only
         model.cluster = partial(masked_cluster, keep=keep, patch_size=model.patch_size)
         pred = model.decode(enc_masked, x, compression=args.compression)
+    net_poses = pred["poses"]  # (1, V), before any BA
+    ba_metrics = {}
     if args.ba:
+        torch.cuda.synchronize()
+        peak_net = torch.cuda.max_memory_allocated()
+        free_network(model)
+        torch.cuda.reset_peak_memory_stats()
+        start = net_poses[:, tr]
+        if args.init_ba_rounds:
+            t1 = time.perf_counter()
+            start = TokenBA(rounds=args.init_ba_rounds)(
+                init_tokens, model.gaussian_head, pred["cameras"][:, tr], start, x[:, tr]
+            )["poses"]
+            del init_tokens
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            ba_metrics["time_init_s"] = time.perf_counter() - t1
+            assert start.shape == (1, len(tr))
+            ba_metrics.update(drift_stats("drift_init", net_poses[0, tr], start[0]))
         # batched (B == 1), outside autocast like ZipSplat.refine
-        ba_out = MaskedTokenBA(mask[:, tr], rounds=0)(
-            pred["scene_tokens"], model.gaussian_head, pred["cameras"][:, tr], pred["poses"][:, tr], x[:, tr]
+        ba_out = MaskedTokenBA(mask[:, tr], alpha_weight=args.alpha_weight, rounds=0)(
+            pred["scene_tokens"], model.gaussian_head, pred["cameras"][:, tr], start, x[:, tr]
         )
+        peak_ba = torch.cuda.max_memory_allocated()
+        ba_metrics["peak_mem_ba_gb"] = peak_ba / 1e9
         poses = pred["poses"].data_.clone()  # (1, V, D): refined train poses, network test poses
         poses[:, tr] = ba_out.pop("poses").data_
         pred = {**pred, **ba_out, "poses": type(pred["poses"])(poses)}  # refined gaussians, scene_tokens
     torch.cuda.synchronize()
     time_s = time.perf_counter() - t0  # encode -> masking -> decode (+ MaskedTokenBA if --ba)
+    if args.ba:
+        ba_metrics.update(drift_stats("drift_train", net_poses[0, tr], pred["poses"][0, tr]))
+        ba_metrics.update(drift_stats("drift_view0", net_poses[0, :1], pred["poses"][0, :1]))
     if args.holdout:
         # Fair evaluation: every view is rendered with a pose aligned to the fixed scene
         # (joint_token_lr=0 keeps the scene tokens unchanged). With BA only the test views, BA
@@ -161,6 +269,16 @@ def main():
         poses = pred["poses"].data_.clone()
         poses[:, align] = aligned_poses.data_
         pred["poses"] = type(pred["poses"])(poses)
+        if len(te):
+            ba_metrics.update(drift_stats("align_test", net_poses[0, te], pred["poses"][0, te]))
+        if args.ba and len(te):
+            # Diagnostic: same alignment, but the test poses first follow the train pose correction.
+            moved = moved_start(net_poses[0, te], net_poses[0, tr], pred["poses"][0, tr])
+            moved = MaskedTokenBA(mask[:, te], rounds=0, joint_token_lr=0.0)(
+                pred["scene_tokens"], model.gaussian_head, pred["cameras"][:, te], moved[None], x[:, te]
+            )["poses"]
+            with torch.no_grad():
+                moved_rgb, _ = pred["gaussians"].render(pred["cameras"][:, te], moved)  # (1, V_te, 3, H, W)
     pred = remove_batch_dim(pred)
 
     # Checks: K = r * kept tokens scene tokens (all at r = 1), G Gaussians per scene token.
@@ -182,6 +300,11 @@ def main():
     pred["gaussians"].save_ply(out / "scene.ply")
 
     peak_mem_gb = torch.cuda.max_memory_allocated() / 1e9  # before the LPIPS network is loaded
+    if args.ba:
+        peak_mem_gb = max(peak_mem_gb, peak_net / 1e9)  # the peak was reset before the BA
+        if len(te):
+            moved_fg = foreground_metrics(moved_rgb[0], x[0, te], mask[0, te][:, None])
+            ba_metrics.update({f"{k}_test_moved": v for k, v in moved_fg.items()})
 
     # Metrics: PSNR of the renders on the input views, over all pixels and over the foreground only.
     V = x.shape[1]
@@ -252,6 +375,7 @@ def main():
         "lpips_per_view": lpips_val.tolist(),
         "lpips_fg_per_view": fg(lpips_fg),
         "alpha_bg": alpha_bg,
+        **ba_metrics,
         **({"test_views": te.tolist(), "pose_aligned_views": align.tolist(), **split} if args.holdout else {}),
     }
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2, default=str))
